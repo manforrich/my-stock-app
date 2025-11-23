@@ -8,8 +8,8 @@ from datetime import datetime, timedelta
 import urllib.parse
 
 # --- 1. 網頁設定 ---
-st.set_page_config(page_title="台股分析儀表板 Pro", layout="wide")
-st.title("📈 台股個股分析儀表板 Pro")
+st.set_page_config(page_title="台股分析儀表板 Ultimate", layout="wide")
+st.title("📈 台股個股分析儀表板 Ultimate")
 
 # --- 2. 預設的股票清單 ---
 stock_categories = {
@@ -51,11 +51,9 @@ stock_categories = {
     }
 }
 
-# --- 3. 側邊欄設定 ---
+# --- 3. 側邊欄設定 (新增回測參數) ---
 st.sidebar.header("選股設定")
 selected_category = st.sidebar.selectbox("1️⃣ 選擇產業類別", list(stock_categories.keys()))
-
-stock_name_for_news = ""
 
 if selected_category == "🔍 自行輸入代號":
     stock_input = st.sidebar.text_input("輸入台股代號 (如 2330)", "2330")
@@ -66,12 +64,14 @@ else:
     selected_stock_name = st.sidebar.selectbox("2️⃣ 選擇個股", list(category_stocks.keys()))
     target_stock = category_stocks[selected_stock_name]
     
-    if " " in selected_stock_name:
-        stock_name_for_news = selected_stock_name.split(" ")[1]
-    else:
-        stock_name_for_news = target_stock
+    stock_name_for_news = selected_stock_name.split(" ")[1] if " " in selected_stock_name else target_stock
 
-days = st.sidebar.slider("📅 觀察天數", 30, 730, 180)
+days = st.sidebar.slider("📅 觀察天數", 30, 730, 365) # 預設改為一年
+
+st.sidebar.markdown("---")
+st.sidebar.header("🤖 回測策略參數")
+initial_capital = st.sidebar.number_input("起始資金 (NT$)", min_value=100000, value=1000000, step=10000)
+st.sidebar.caption("策略：碰 MA 買入 / 跌破 MA 減碼/出場")
 
 # --- 4. 數據處理函數 ---
 if not target_stock.endswith(".TW") and not target_stock.endswith(".TWO"):
@@ -94,9 +94,15 @@ def get_data(ticker, days):
         df.columns = [c.capitalize() for c in df.columns]
         df.index = pd.to_datetime(df.index)
         
+        # --- 新增 MA10 和 MA60 計算 ---
+        df['MA5'] = df['Close'].rolling(window=5).mean()
+        df['MA10'] = df['Close'].rolling(window=10).mean() # 新增 MA10
+        df['MA20'] = df['Close'].rolling(window=20).mean()
+        df['MA60'] = df['Close'].rolling(window=60).mean() # 新增季線 MA60
+        
         if df.empty:
             return None
-        return df
+        return df.dropna(subset=['MA60']) # 確保從有季線資料的地方開始回測
     except Exception as e:
         return None
 
@@ -110,76 +116,178 @@ def get_google_news(query):
     except Exception as e:
         return []
 
-# --- 5. 畫面呈現 ---
-with st.spinner('正在分析股價與搜尋新聞...'):
+# --- 5. 回測引擎 (Backtesting Logic) ---
+
+def run_backtest(df, initial_capital):
+    capital = initial_capital
+    shares = 0
+    trade_log = []
+    
+    # 初始化投資組合價值 (為了繪圖)
+    df['Portfolio_Value'] = initial_capital
+    df['Shares_Held'] = 0
+    df['Cash'] = initial_capital
+    
+    # 從有 MA60 資料的第二天開始回測
+    for i in range(1, len(df)):
+        date = df.index[i]
+        price = df['Close'].iloc[i]
+        
+        # 前一日的資料 (用於判斷是否發生穿越/跌破)
+        prev_close = df['Close'].iloc[i-1]
+        prev_ma5 = df['MA5'].iloc[i-1]
+        prev_ma10 = df['MA10'].iloc[i-1]
+        prev_ma20 = df['MA20'].iloc[i-1]
+        prev_ma60 = df['MA60'].iloc[i-1]
+        
+        # 當日均線
+        current_ma5 = df['MA5'].iloc[i]
+        current_ma10 = df['MA10'].iloc[i]
+        current_ma20 = df['MA20'].iloc[i]
+        current_ma60 = df['MA60'].iloc[i]
+        
+        # 總資產現值 (當日開盤前)
+        current_portfolio_value = capital + shares * price
+        
+        # --- 賣出/出場邏輯 (優先判斷) ---
+        
+        # 1. 跌破季線 (MA60) 則全部出場
+        if shares > 0 and prev_close > prev_ma60 and price < current_ma60:
+            amount_to_sell = shares
+            cash_gain = amount_to_sell * price
+            capital += cash_gain
+            shares -= amount_to_sell
+            trade_log.append({'Date': date, 'Price': price, 'Action': 'EXIT ALL', 'Shares': amount_to_sell, 'Value': amount_to_sell * price, 'Capital_After': capital})
+            
+        # 2. 跌破月線 (MA20) 則減碼 50%
+        elif shares > 0 and prev_close > prev_ma20 and price < current_ma20:
+            amount_to_sell = shares * 0.5
+            amount_to_sell = int(amount_to_sell / 1000) * 1000 # 台灣單位為張 (1000 股)
+            if amount_to_sell > 0:
+                cash_gain = amount_to_sell * price
+                capital += cash_gain
+                shares -= amount_to_sell
+                trade_log.append({'Date': date, 'Price': price, 'Action': 'SELL 50%', 'Shares': amount_to_sell, 'Value': amount_to_sell * price, 'Capital_After': capital})
+
+        # --- 買入/加碼邏輯 ---
+
+        # 3. 碰觸 (穿越) 10日線 則加碼 10%
+        elif capital > 0 and prev_close < prev_ma10 and price >= current_ma10:
+            investment_amount = current_portfolio_value * 0.10
+            shares_to_buy = int(investment_amount / price / 1000) * 1000
+            
+            # 確保有足夠的現金，且買入單位不為零
+            if shares_to_buy > 0 and capital >= shares_to_buy * price:
+                capital -= shares_to_buy * price
+                shares += shares_to_buy
+                trade_log.append({'Date': date, 'Price': price, 'Action': 'BUY 10% (MA10)', 'Shares': shares_to_buy, 'Value': shares_to_buy * price, 'Capital_After': capital})
+
+        # 4. 碰觸 (穿越) 5日線 則加碼 5%
+        elif capital > 0 and prev_close < prev_ma5 and price >= current_ma5:
+            investment_amount = current_portfolio_value * 0.05
+            shares_to_buy = int(investment_amount / price / 1000) * 1000
+            
+            if shares_to_buy > 0 and capital >= shares_to_buy * price:
+                capital -= shares_to_buy * price
+                shares += shares_to_buy
+                trade_log.append({'Date': date, 'Price': price, 'Action': 'BUY 5% (MA5)', 'Shares': shares_to_buy, 'Value': shares_to_buy * price, 'Capital_After': capital})
+                
+        # 紀錄每日資產狀態
+        df.loc[date, 'Portfolio_Value'] = capital + shares * price
+        df.loc[date, 'Shares_Held'] = shares
+        df.loc[date, 'Cash'] = capital
+        
+    # 回測結束，清算剩餘持股
+    if shares > 0:
+        final_price = df['Close'].iloc[-1]
+        cash_gain = shares * final_price
+        capital += cash_gain
+        shares = 0
+        trade_log.append({'Date': df.index[-1], 'Price': final_price, 'Action': 'Final Liquidation', 'Shares': amount_to_sell, 'Value': cash_gain, 'Capital_After': capital})
+    
+    return capital, trade_log, df
+
+# --- 6. 畫面呈現 ---
+
+with st.spinner('正在分析股價、回測策略與搜尋新聞...'):
     data = get_data(ticker, days)
 
 if data is not None and not data.empty:
+    
+    # 執行回測並取得結果
+    final_capital, trade_log, data = run_backtest(data.copy(), initial_capital)
+    
     try:
-        latest_data = data.iloc[-1]
-        prev_data = data.iloc[-2]
-        current_price = latest_data['Close']
-        change = current_price - prev_data['Close']
-        change_pct = (change / prev_data['Close']) * 100
-        
-        col1, col2, col3 = st.columns(3)
+        # 頂部指標
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("股票代號", target_stock)
-        col2.metric("收盤價", f"{current_price:.2f}", f"{change:.2f} ({change_pct:.2f}%)")
-        col3.metric("成交量", f"{int(latest_data['Volume']/1000):,} 張")
-
-        # --- 繪圖區 ---
-        st.subheader(f"📈 {target_stock} 股價走勢")
+        col2.metric("起始資金", f"NT$ {initial_capital:,}")
         
-        data['MA5'] = data['Close'].rolling(window=5).mean()
-        data['MA20'] = data['Close'].rolling(window=20).mean()
+        final_return = (final_capital - initial_capital) / initial_capital * 100
+        col3.metric("最終資產", f"NT$ {final_capital:,.0f}", f"{final_return:,.2f}%")
+        
+        # 計算買入持有策略的回報 (Buy and Hold Benchmark)
+        if initial_capital > 0:
+            benchmark_return = (data['Close'].iloc[-1] / data['Close'].iloc[0] - 1) * 100
+            col4.metric("買入持有回報 (Buy & Hold)", f"{benchmark_return:,.2f}%")
 
-        # 建立雙層圖表 (上層K線，下層成交量)
+        st.markdown("---")
+        
+        # --- A. 繪圖區 (新增投資組合價值線) ---
+        st.subheader(f"📈 {target_stock} 股價走勢與策略回測圖")
+        
         fig = make_subplots(
-            rows=2, cols=1, 
+            rows=3, cols=1, 
             shared_xaxes=True, 
             vertical_spacing=0.03, 
-            subplot_titles=(f'{target_stock} 股價', '成交量'),
-            row_width=[0.2, 0.7]
+            subplot_titles=(f'{target_stock} 股價', '投資組合價值', '成交量'),
+            row_width=[0.2, 0.3, 0.5] # 股價佔 50%，價值佔 30%，成交量佔 20%
         )
 
-        # K線
+        # K線 (Row 1)
         fig.add_trace(go.Candlestick(
-            x=data.index,
-            open=data['Open'],
-            high=data['High'],
-            low=data['Low'],
-            close=data['Close'],
-            name='K線'
+            x=data.index, open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'], name='K線'
         ), row=1, col=1)
 
-        # 均線
+        # 均線 (Row 1)
+        fig.add_trace(go.Scatter(x=data.index, y=data['MA5'], mode='lines', name='MA5', line=dict(color='orange', width=1)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=data.index, y=data['MA10'], mode='lines', name='MA10', line=dict(color='yellow', width=1)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=data.index, y=data['MA20'], mode='lines', name='MA20', line=dict(color='purple', width=1)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=data.index, y=data['MA60'], mode='lines', name='MA60 (季)', line=dict(color='green', width=1)), row=1, col=1)
+
+        # 投資組合價值線 (Row 2)
         fig.add_trace(go.Scatter(
-            x=data.index, y=data['MA5'], mode='lines', name='5日均線', line=dict(color='orange', width=1)
-        ), row=1, col=1)
+            x=data.index, y=data['Portfolio_Value'], mode='lines', name='組合價值', line=dict(color='#1E90FF', width=2)
+        ), row=2, col=1)
         
-        fig.add_trace(go.Scatter(
-            x=data.index, y=data['MA20'], mode='lines', name='20日均線', line=dict(color='purple', width=1)
-        ), row=1, col=1)
-
-        # 成交量
+        # 成交量 (Row 3)
         volume_colors = ['red' if row['Close'] >= row['Open'] else 'green' for i, row in data.iterrows()]
         fig.add_trace(go.Bar(
             x=data.index, y=data['Volume'], name='成交量', marker_color=volume_colors
-        ), row=2, col=1)
+        ), row=3, col=1)
 
         fig.update_layout(
             xaxis_rangeslider_visible=False, 
-            height=600, 
+            height=800, 
             template="plotly_dark", 
             margin=dict(l=0, r=0, t=30, b=0),
-            showlegend=False
+            showlegend=True,
+            xaxis3_title="日期" # 調整最下方的X軸標題
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        with st.expander("📊 查看詳細歷史數據"):
-            st.dataframe(data.sort_index(ascending=False).style.format("{:.2f}"))
+        # --- B. 交易紀錄 ---
+        st.subheader("📋 交易紀錄 (Trade Log)")
+        if trade_log:
+             df_trades = pd.DataFrame(trade_log)
+             st.dataframe(df_trades.sort_values(by='Date', ascending=False).style.format({"Price": "NT$ {:,.2f}", "Value": "NT$ {:,.0f}", "Capital_After": "NT$ {:,.0f}"}))
+        else:
+             st.info("回測期間內，沒有觸發任何交易訊號。")
 
-        # --- 新聞區 ---
+        # --- C. 詳細數據與新聞 ---
+        with st.expander("📊 查看詳細歷史數據"):
+            st.dataframe(data.sort_index(ascending=False).style.format({"Open": "{:.2f}", "Close": "{:.2f}", "Volume": "{:,}", "MA5": "{:.2f}"}))
+        
         st.divider()
         st.subheader(f"📰 {stock_name_for_news} 最新相關新聞")
         news_list = get_google_news(stock_name_for_news)
@@ -193,6 +301,7 @@ if data is not None and not data.empty:
             st.write("目前找不到相關新聞。")
             
     except Exception as e:
-        st.error(f"畫面處理錯誤: {e}")
+        st.error(f"畫面或回測處理錯誤: {e}")
+        st.write("請檢查選股範圍，確保資料完整性足夠計算均線 (約60天)。")
 else:
     st.warning(f"找不到代號 {target_stock} 的資料。")
