@@ -1,65 +1,140 @@
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
+import pandas as pd
 from datetime import datetime, timedelta
 
 # --- 1. 網頁設定 ---
-st.set_page_config(page_title="台股分析儀表板", layout="wide")
-st.title("📈 台股個股分析儀表板")
+st.set_page_config(page_title="台股分析儀表板 Pro", layout="wide")
+st.title("📈 台股個股分析儀表板 Pro")
 
-# --- 2. 側邊欄：輸入股票代號 ---
-st.sidebar.header("查詢設定")
-stock_id = st.sidebar.text_input("輸入台股代號 (例如 2330)", "2330")
-days = st.sidebar.slider("觀察天數", 30, 365, 180)
+# --- 2. 預設的股票清單 ---
+stock_categories = {
+    "🔍 自行輸入代號": {},
+    "🏆 熱門權值股": {
+        "2330 台積電": "2330",
+        "2317 鴻海": "2317",
+        "2454 聯發科": "2454",
+        "2308 台達電": "2308",
+        "2382 廣達": "2382"
+    },
+    "🤖 AI 概念股": {
+        "3231 緯創": "3231",
+        "2376 技嘉": "2376",
+        "2356 英業達": "2356",
+        "6669 緯穎": "6669",
+        "3017 奇鋐": "3017"
+    },
+    "🚢 航運股": {
+        "2603 長榮": "2603",
+        "2609 陽明": "2609",
+        "2615 萬海": "2615",
+        "2618 長榮航": "2618",
+        "2610 華航": "2610"
+    },
+    "💰 金融股": {
+        "2881 富邦金": "2881",
+        "2882 國泰金": "2882",
+        "2891 中信金": "2891",
+        "2886 兆豐金": "2886",
+        "2884 玉山金": "2884"
+    },
+    "📊 熱門 ETF": {
+        "0050 元大台灣50": "0050",
+        "0056 元大高股息": "0056",
+        "00878 國泰永續高股息": "00878",
+        "00929 復華台灣科技優息": "00929",
+        "00940 元大台灣價值高息": "00940"
+    }
+}
 
-# 處理台股代號 (Yahoo Finance 需要加上 .TW 或 .TWO)
-if not stock_id.endswith(".TW") and not stock_id.endswith(".TWO"):
-    ticker = stock_id + ".TW"
+# --- 3. 側邊欄設定 ---
+st.sidebar.header("選股設定")
+selected_category = st.sidebar.selectbox("1️⃣ 選擇產業類別", list(stock_categories.keys()))
+
+if selected_category == "🔍 自行輸入代號":
+    stock_input = st.sidebar.text_input("輸入台股代號 (如 2330)", "2330")
+    target_stock = stock_input
 else:
-    ticker = stock_id
+    category_stocks = stock_categories[selected_category]
+    selected_stock_name = st.sidebar.selectbox("2️⃣ 選擇個股", list(category_stocks.keys()))
+    target_stock = category_stocks[selected_stock_name]
 
-# --- 3. 抓取數據 ---
+days = st.sidebar.slider("📅 觀察天數", 30, 730, 180)
+
+# --- 4. 數據處理與邏輯 (修正版) ---
+if not target_stock.endswith(".TW") and not target_stock.endswith(".TWO"):
+    ticker = target_stock + ".TW"
+else:
+    ticker = target_stock
+
 @st.cache_data
 def get_data(ticker, days):
     start_date = datetime.now() - timedelta(days=days)
     try:
-        df = yf.download(ticker, start=start_date)
+        # 改用 Ticker.history 抓取，格式較穩定
+        stock = yf.Ticker(ticker)
+        df = stock.history(start=start_date)
+        
+        # 如果抓不到資料 (Empty DataFrame)，嘗試上櫃後綴 .TWO
+        if df.empty and ticker.endswith(".TW"):
+            ticker_two = ticker.replace(".TW", ".TWO")
+            stock_two = yf.Ticker(ticker_two)
+            df = stock_two.history(start=start_date)
+        
+        # 強制整理欄位名稱 (避免多層索引問題)
+        df.columns = [c.capitalize() for c in df.columns]
+        
+        # 確保索引是日期格式
+        df.index = pd.to_datetime(df.index)
+        
+        # 如果還是空的，回傳 None
+        if df.empty:
+            return None
+            
         return df
     except Exception as e:
+        st.error(f"下載數據時發生錯誤: {e}")
         return None
 
-data = get_data(ticker, days)
+# 顯示載入中
+with st.spinner('正在從雲端抓取資料...'):
+    data = get_data(ticker, days)
 
-# --- 4. 顯示內容 ---
+# --- 5. 畫面呈現 ---
 if data is not None and not data.empty:
-    # 取得最新股價資訊
-    stock_info = yf.Ticker(ticker).info
-    current_price = data['Close'].iloc[-1]
-    prev_price = data['Close'].iloc[-2]
-    change = current_price - prev_price
-    change_pct = (change / prev_price) * 100
-    
-    # 顯示頂部數據卡片
-    col1, col2, col3 = st.columns(3)
-    col1.metric("股票名稱", stock_info.get('longName', stock_id))
-    col2.metric("最新收盤價", f"{float(current_price):.2f}", f"{float(change):.2f} ({float(change_pct):.2f}%)")
-    col3.metric("成交量", f"{int(data['Volume'].iloc[-1]):,}")
+    try:
+        # 取得最新一筆資料
+        latest_data = data.iloc[-1]
+        prev_data = data.iloc[-2]
+        
+        current_price = latest_data['Close']
+        prev_price = prev_data['Close']
+        change = current_price - prev_price
+        change_pct = (change / prev_price) * 100
+        
+        # 顯示大字報
+        col1, col2, col3 = st.columns(3)
+        col1.metric("股票代號", target_stock)
+        col2.metric("收盤價", f"{current_price:.2f}", f"{change:.2f} ({change_pct:.2f}%)")
+        col3.metric("成交量", f"{int(latest_data['Volume']/1000):,} 張")
 
-    # --- 繪製 K 線圖 (Candlestick) ---
-    st.subheader(f"{stock_id} 股價走勢圖")
-    fig = go.Figure(data=[go.Candlestick(x=data.index,
-                    open=data['Open'],
-                    high=data['High'],
-                    low=data['Low'],
-                    close=data['Close'],
-                    name='K線')])
-    
-    fig.update_layout(xaxis_rangeslider_visible=False, height=500)
-    st.plotly_chart(fig, use_container_width=True)
+        # 繪製 K 線圖
+        st.subheader(f"📈 {target_stock} 股價走勢")
+        
+        # 計算均線
+        data['MA5'] = data['Close'].rolling(window=5).mean()
+        data['MA20'] = data['Close'].rolling(window=20).mean()
 
-    # --- 顯示歷史數據表格 ---
-    with st.expander("查看詳細歷史數據"):
-        st.dataframe(data.sort_index(ascending=False))
+        fig = go.Figure()
 
-else:
-    st.error("找不到該股票數據，請確認代號是否正確 (例如 2330)。")
+        # K線
+        fig.add_trace(go.Candlestick(x=data.index,
+                        open=data['Open'],
+                        high=data['High'],
+                        low=data['Low'],
+                        close=data['Close'],
+                        name='K線'))
+        
+        # MA線
+        fig.add_trace(go.Scatter(x=data.index, y=data['MA5'], mode='lines', name
