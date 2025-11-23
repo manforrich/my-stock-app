@@ -7,7 +7,7 @@ import datetime
 
 # 1. 設定網頁標題
 st.set_page_config(page_title="股票分析儀表板", layout="wide")
-st.title("📈 股票分析儀表板 (籌碼密集區版)")
+st.title("📈 股票分析儀表板 (修復版)")
 
 # 2. 側邊欄：設定參數
 st.sidebar.header("設定參數")
@@ -30,9 +30,9 @@ else:
 # --- 技術指標設定 ---
 st.sidebar.subheader("技術指標")
 ma_days = st.sidebar.multiselect("顯示均線 (MA)", [5, 10, 20, 60, 120, 240], default=[5, 20])
-show_bb = st.sidebar.checkbox("顯示布林通道 (Bollinger Bands)", value=False)
-show_vp = st.sidebar.checkbox("顯示成交量分佈 (Volume Profile)", value=True) # <--- 新增成交密集區開關
-show_gaps = st.sidebar.checkbox("顯示跳空缺口 (Gaps)", value=True)
+show_bb = st.sidebar.checkbox("顯示布林通道", value=False)
+show_vp = st.sidebar.checkbox("顯示籌碼密集區 (Volume Profile)", value=True) 
+show_gaps = st.sidebar.checkbox("顯示跳空缺口", value=True)
 
 # 3. 抓取股價數據
 def get_stock_data(ticker, mode, period=None, start=None, end=None):
@@ -67,13 +67,14 @@ if stock_id:
         current_volume = df['Volume'].iloc[-1]
 
         col1.metric("當前股價", f"{current_price:.2f}", f"{change:.2f} ({pct_change:.2f}%)")
-        col2.metric("最高價 (區間)", f"{df['High'].max():.2f}")
-        col3.metric("最低價 (區間)", f"{df['Low'].min():.2f}")
+        col2.metric("最高價", f"{df['High'].max():.2f}")
+        col3.metric("最低價", f"{df['Low'].min():.2f}")
         col4.metric("最新成交量", f"{current_volume:,}")
 
         # --- B. 畫圖 ---
         st.subheader(f"📊 {stock_id} 走勢圖")
         
+        # 建立子圖表 (共用 X 軸)
         fig = make_subplots(rows=2, cols=1, 
                             shared_xaxes=True, 
                             vertical_spacing=0.05, 
@@ -86,33 +87,30 @@ if stock_id:
                                      name="K線"), 
                       row=1, col=1)
         
-        # --- Volume Profile (成交密集區) 邏輯 ---
+        # --- Volume Profile (修復與優化) ---
         if show_vp:
-            # 建立一個隱藏的 X 軸 (xaxis2) 給 Volume Profile 使用
-            # 我們設定 range 為倒過來，讓柱狀圖靠右邊顯示
-            # nbinsy 是將價格切成幾等份，通常 50-100 之間效果最好
+            # 為了讓它不要跟主圖打架，我們使用 xaxis3 (獨立的 X 軸)
+            # 並且不強制設定 range，讓它自動縮放
             fig.add_trace(go.Histogram(
                 y=df['Close'], 
-                x=df['Volume'], # 用成交量作為權重
-                histfunc='sum', # 加總成交量
-                orientation='h', # 水平方向
-                nbinsy=50,       # 切成 50 個價格區間
+                x=df['Volume'],
+                histfunc='sum',
+                orientation='h',
+                nbinsy=50,
                 name="籌碼分佈",
-                xaxis='x2',      # 指定使用第二個 X 軸
-                marker=dict(color='rgba(0, 0, 0, 0.2)'), # 灰色半透明
-                hoverinfo='none' # 滑鼠移上去不顯示資訊，避免干擾 K 線
+                xaxis='x3', # 使用第三個 X 軸
+                marker=dict(color='rgba(128, 128, 128, 0.3)'), # 灰色半透明
+                hoverinfo='x+y' 
             ), row=1, col=1)
 
-            # 設定第二個 X 軸的樣式 (隱藏刻度，並設定範圍)
+            # 設定 xaxis3 的屬性
             fig.update_layout(
-                xaxis2=dict(
-                    overlaying='x',  # 疊加在原本的 x 軸上
-                    side='top',      # 標籤放在上面(雖然我們設為隱藏)
-                    showgrid=False,  # 不顯示網格
-                    visible=False,   # 隱藏軸線
-                    # 關鍵設定：range=[最大量的4倍, 0]
-                    # 這會讓柱狀圖只佔畫面的 1/4 (右邊)，且從右向左長出來
-                    range=[df['Volume'].sum()/2, 0] 
+                xaxis3=dict(
+                    overlaying='x', # 疊加在主 X 軸上
+                    side='top',     # 標籤放上面 (避免跟下面的時間軸混淆)
+                    showgrid=False, # 不顯示網格
+                    showticklabels=False, # 不顯示數字 (保持畫面乾淨)
+                    visible=False   # 隱藏軸線
                 )
             )
 
@@ -136,19 +134,13 @@ if stock_id:
             
             fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'],
                                      line=dict(color='rgba(0, 100, 255, 0.3)', width=1),
-                                     mode='lines', name='BB 下軌', showlegend=False),
-                          row=1, col=1)
+                                     mode='lines', showlegend=False), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'],
                                      line=dict(color='rgba(0, 100, 255, 0.3)', width=1),
                                      mode='lines', fill='tonexty', 
-                                     fillcolor='rgba(0, 100, 255, 0.1)', name='布林通道'),
-                          row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df['BB_Mid'],
-                                     line=dict(color='rgba(0, 100, 255, 0.6)', width=1, dash='dash'),
-                                     mode='lines', name='BB 中軌'),
-                          row=1, col=1)
+                                     fillcolor='rgba(0, 100, 255, 0.1)', name='布林通道'), row=1, col=1)
 
-        # 4. 成交量
+        # 4. 成交量 (下方子圖)
         vol_colors = ['green' if row['Close'] >= row['Open'] else 'red' for index, row in df.iterrows()]
         fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, name="成交量"), 
                       row=2, col=1)
