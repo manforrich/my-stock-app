@@ -16,7 +16,7 @@ period = st.sidebar.selectbox("選擇時間範圍", ["3mo", "6mo", "1y", "2y", "
 # --- 技術指標設定 ---
 st.sidebar.subheader("技術指標")
 ma_days = st.sidebar.multiselect("顯示均線 (MA)", [5, 10, 20, 60, 120, 240], default=[5, 20])
-show_gaps = st.sidebar.checkbox("顯示跳空缺口 (Gaps)", value=True) # <--- 新增這個開關
+show_gaps = st.sidebar.checkbox("顯示跳空缺口 (Gaps)", value=True)
 
 # 3. 抓取股價數據
 def get_stock_data(ticker, period):
@@ -55,6 +55,7 @@ if stock_id:
         # --- B. 畫圖 (K線 + 均線 + 成交量 + 缺口) ---
         st.subheader(f"📊 {stock_id} 走勢圖")
         
+        # 建立子圖表
         fig = make_subplots(rows=2, cols=1, 
                             shared_xaxes=True, 
                             vertical_spacing=0.05, 
@@ -76,6 +77,67 @@ if stock_id:
                                      line=dict(width=1.5, color=colors[i % len(colors)])),
                           row=1, col=1)
 
-        # 3. 成交量
+        # 3. 成交量 (這裡是你原本報錯的地方，現在修好了)
         vol_colors = ['green' if row['Close'] >= row['Open'] else 'red' for index, row in df.iterrows()]
-        fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_
+        fig.add_trace(go.Bar(x=df.index, 
+                             y=df['Volume'], 
+                             marker_color=vol_colors, 
+                             name="成交量"), 
+                      row=2, col=1)
+
+        # 4. --- 缺口偵測邏輯 ---
+        if show_gaps:
+            gap_shapes = []
+            for i in range(1, len(df)):
+                curr_low = df['Low'].iloc[i]
+                curr_high = df['High'].iloc[i]
+                prev_high = df['High'].iloc[i-1]
+                prev_low = df['Low'].iloc[i-1]
+                
+                curr_date = df.index[i]
+                prev_date = df.index[i-1]
+                
+                # 跳空上漲
+                if curr_low > prev_high:
+                    gap_shapes.append(dict(
+                        type="rect", xref="x", yref="y",
+                        x0=prev_date, x1=curr_date,
+                        y0=prev_high, y1=curr_low,
+                        fillcolor="rgba(0, 255, 0, 0.3)", line=dict(width=0),
+                    ))
+                
+                # 跳空下跌
+                elif curr_high < prev_low:
+                    gap_shapes.append(dict(
+                        type="rect", xref="x", yref="y",
+                        x0=prev_date, x1=curr_date,
+                        y0=curr_high, y1=prev_low,
+                        fillcolor="rgba(255, 0, 0, 0.3)", line=dict(width=0),
+                    ))
+            
+            fig.update_layout(shapes=gap_shapes)
+
+        # 設定版面
+        fig.update_layout(xaxis_rangeslider_visible=False, height=600, showlegend=True)
+        fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # --- C. 新聞 ---
+        st.divider()
+        st.subheader(f"📰 {stock_id} 最新新聞")
+        news_items = get_google_news(stock_id)
+        if news_items:
+            for item in news_items[:6]:
+                with st.expander(item.title):
+                    st.write(f"發布時間: {item.published}")
+                    st.markdown(f"[👉 點擊閱讀全文]({item.link})")
+        else:
+            st.info("目前找不到相關新聞")
+
+        # --- D. 表格 ---
+        with st.expander("查看數據表格"):
+            st.dataframe(df.sort_index(ascending=False))
+
+    else:
+        st.error("找不到股票數據，請確認代碼是否正確")
