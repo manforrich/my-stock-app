@@ -62,7 +62,7 @@ else:
 
 days = st.sidebar.slider("📅 觀察天數", 30, 730, 180)
 
-# --- 4. 數據處理與邏輯 (修正版) ---
+# --- 4. 數據處理與邏輯 ---
 if not target_stock.endswith(".TW") and not target_stock.endswith(".TWO"):
     ticker = target_stock + ".TW"
 else:
@@ -72,23 +72,17 @@ else:
 def get_data(ticker, days):
     start_date = datetime.now() - timedelta(days=days)
     try:
-        # 改用 Ticker.history 抓取，格式較穩定
         stock = yf.Ticker(ticker)
         df = stock.history(start=start_date)
         
-        # 如果抓不到資料 (Empty DataFrame)，嘗試上櫃後綴 .TWO
         if df.empty and ticker.endswith(".TW"):
             ticker_two = ticker.replace(".TW", ".TWO")
             stock_two = yf.Ticker(ticker_two)
             df = stock_two.history(start=start_date)
         
-        # 強制整理欄位名稱 (避免多層索引問題)
         df.columns = [c.capitalize() for c in df.columns]
-        
-        # 確保索引是日期格式
         df.index = pd.to_datetime(df.index)
         
-        # 如果還是空的，回傳 None
         if df.empty:
             return None
             
@@ -104,7 +98,6 @@ with st.spinner('正在從雲端抓取資料...'):
 # --- 5. 畫面呈現 ---
 if data is not None and not data.empty:
     try:
-        # 取得最新一筆資料
         latest_data = data.iloc[-1]
         prev_data = data.iloc[-2]
         
@@ -113,28 +106,57 @@ if data is not None and not data.empty:
         change = current_price - prev_price
         change_pct = (change / prev_price) * 100
         
-        # 顯示大字報
         col1, col2, col3 = st.columns(3)
         col1.metric("股票代號", target_stock)
         col2.metric("收盤價", f"{current_price:.2f}", f"{change:.2f} ({change_pct:.2f}%)")
         col3.metric("成交量", f"{int(latest_data['Volume']/1000):,} 張")
 
-        # 繪製 K 線圖
         st.subheader(f"📈 {target_stock} 股價走勢")
         
-        # 計算均線
         data['MA5'] = data['Close'].rolling(window=5).mean()
         data['MA20'] = data['Close'].rolling(window=20).mean()
 
         fig = go.Figure()
 
-        # K線
-        fig.add_trace(go.Candlestick(x=data.index,
-                        open=data['Open'],
-                        high=data['High'],
-                        low=data['Low'],
-                        close=data['Close'],
-                        name='K線'))
+        # K線 (改成多行格式，避免複製錯誤)
+        fig.add_trace(go.Candlestick(
+            x=data.index,
+            open=data['Open'],
+            high=data['High'],
+            low=data['Low'],
+            close=data['Close'],
+            name='K線'
+        ))
         
-        # MA線
-        fig.add_trace(go.Scatter(x=data.index, y=data['MA5'], mode='lines', name
+        # MA線 (改成多行格式)
+        fig.add_trace(go.Scatter(
+            x=data.index, 
+            y=data['MA5'], 
+            mode='lines', 
+            name='5日均線', 
+            line=dict(color='orange', width=1)
+        ))
+
+        fig.add_trace(go.Scatter(
+            x=data.index, 
+            y=data['MA20'], 
+            mode='lines', 
+            name='20日均線', 
+            line=dict(color='purple', width=1)
+        ))
+
+        fig.update_layout(
+            xaxis_rangeslider_visible=False, 
+            height=500,
+            template="plotly_dark",
+            margin=dict(l=0, r=0, t=30, b=0)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        with st.expander("📊 查看詳細數據"):
+            st.dataframe(data.sort_index(ascending=False).style.format("{:.2f}"))
+            
+    except Exception as e:
+        st.error(f"數據處理錯誤: {e}")
+else:
+    st.warning(f"找不到代號 {target_stock} 的資料。")
