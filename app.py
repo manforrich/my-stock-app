@@ -3,17 +3,17 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import feedparser
-import datetime # <--- 新增這個用來處理日期
+import datetime
 
 # 1. 設定網頁標題
 st.set_page_config(page_title="股票分析儀表板", layout="wide")
-st.title("📈 股票分析儀表板 (自訂日期版)")
+st.title("📈 股票分析儀表板 (全功能版)")
 
 # 2. 側邊欄：設定參數
 st.sidebar.header("設定參數")
 stock_id = st.sidebar.text_input("輸入股票代碼", value="2330.TW")
 
-# --- 新增功能：切換時間模式 ---
+# --- 時間模式切換 ---
 time_mode = st.sidebar.radio("選擇時間模式", ["預設區間", "自訂日期"])
 
 start_date = None
@@ -23,8 +23,6 @@ selected_period = None
 if time_mode == "預設區間":
     selected_period = st.sidebar.selectbox("選擇時間範圍", ["3mo", "6mo", "1y", "2y", "5y", "max"], index=2)
 else:
-    # 自訂日期模式
-    # 預設開始日期為一年前，結束日期為今天
     default_start = datetime.date.today() - datetime.timedelta(days=365)
     start_date = st.sidebar.date_input("開始日期", default_start)
     end_date = st.sidebar.date_input("結束日期", datetime.date.today())
@@ -32,17 +30,16 @@ else:
 # --- 技術指標設定 ---
 st.sidebar.subheader("技術指標")
 ma_days = st.sidebar.multiselect("顯示均線 (MA)", [5, 10, 20, 60, 120, 240], default=[5, 20])
+show_bb = st.sidebar.checkbox("顯示布林通道 (Bollinger Bands)", value=False) # <--- 新增布林通道開關
 show_gaps = st.sidebar.checkbox("顯示跳空缺口 (Gaps)", value=True)
 
-# 3. 抓取股價數據 (更新版：支援兩種模式)
+# 3. 抓取股價數據
 def get_stock_data(ticker, mode, period=None, start=None, end=None):
     try:
         stock = yf.Ticker(ticker)
         if mode == "預設區間":
             hist = stock.history(period=period)
         else:
-            # yfinance 的 end date 是不包含當天的，所以如果要包含選取的結束日，通常建議不用特別加一天，
-            # 但為了確保數據完整，直接傳入日期物件即可
             hist = stock.history(start=start, end=end)
         return hist
     except Exception as e:
@@ -56,7 +53,6 @@ def get_google_news(query):
 
 # 5. 主程式邏輯
 if stock_id:
-    # 呼叫新的抓取函數
     df = get_stock_data(stock_id, time_mode, period=selected_period, start=start_date, end=end_date)
     
     if df is not None and not df.empty:
@@ -70,11 +66,11 @@ if stock_id:
         current_volume = df['Volume'].iloc[-1]
 
         col1.metric("當前股價", f"{current_price:.2f}", f"{change:.2f} ({pct_change:.2f}%)")
-        col2.metric("最高價 (區間)", f"{df['High'].max():.2f}") # 改名為區間
-        col3.metric("最低價 (區間)", f"{df['Low'].min():.2f}") # 改名為區間
+        col2.metric("最高價 (區間)", f"{df['High'].max():.2f}")
+        col3.metric("最低價 (區間)", f"{df['Low'].min():.2f}")
         col4.metric("最新成交量", f"{current_volume:,}")
 
-        # --- B. 畫圖 (K線 + 均線 + 成交量 + 缺口) ---
+        # --- B. 畫圖 ---
         st.subheader(f"📊 {stock_id} 走勢圖")
         
         fig = make_subplots(rows=2, cols=1, 
@@ -98,7 +94,38 @@ if stock_id:
                                      line=dict(width=1.5, color=colors[i % len(colors)])),
                           row=1, col=1)
 
-        # 3. 成交量
+        # 3. --- 布林通道邏輯 (新增) ---
+        if show_bb:
+            # 計算數據 (20日均線, 2倍標準差)
+            bb_period = 20
+            std_dev = 2
+            df['BB_Mid'] = df['Close'].rolling(window=bb_period).mean()
+            df['BB_Std'] = df['Close'].rolling(window=bb_period).std()
+            df['BB_Upper'] = df['BB_Mid'] + (std_dev * df['BB_Std'])
+            df['BB_Lower'] = df['BB_Mid'] - (std_dev * df['BB_Std'])
+            
+            # 畫下軌 (不顯示圖例名稱，線條設為透明度高的藍色)
+            fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'],
+                                     line=dict(color='rgba(0, 100, 255, 0.3)', width=1),
+                                     mode='lines', name='BB 下軌', showlegend=False),
+                          row=1, col=1)
+            
+            # 畫上軌 (並填滿與下軌之間的區域)
+            fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'],
+                                     line=dict(color='rgba(0, 100, 255, 0.3)', width=1),
+                                     mode='lines', 
+                                     fill='tonexty', # 填滿到上一條線(也就是下軌)
+                                     fillcolor='rgba(0, 100, 255, 0.1)', # 淺藍色背景
+                                     name='布林通道'),
+                          row=1, col=1)
+            
+            # 畫中軌 (虛線)
+            fig.add_trace(go.Scatter(x=df.index, y=df['BB_Mid'],
+                                     line=dict(color='rgba(0, 100, 255, 0.6)', width=1, dash='dash'),
+                                     mode='lines', name='BB 中軌'),
+                          row=1, col=1)
+
+        # 4. 成交量
         vol_colors = ['green' if row['Close'] >= row['Open'] else 'red' for index, row in df.iterrows()]
         fig.add_trace(go.Bar(x=df.index, 
                              y=df['Volume'], 
@@ -106,7 +133,7 @@ if stock_id:
                              name="成交量"), 
                       row=2, col=1)
 
-        # 4. --- 缺口偵測邏輯 ---
+        # 5. 缺口偵測
         if show_gaps:
             gap_shapes = []
             for i in range(1, len(df)):
@@ -114,28 +141,17 @@ if stock_id:
                 curr_high = df['High'].iloc[i]
                 prev_high = df['High'].iloc[i-1]
                 prev_low = df['Low'].iloc[i-1]
-                
                 curr_date = df.index[i]
                 prev_date = df.index[i-1]
                 
-                # 跳空上漲
-                if curr_low > prev_high:
-                    gap_shapes.append(dict(
-                        type="rect", xref="x", yref="y",
-                        x0=prev_date, x1=curr_date,
-                        y0=prev_high, y1=curr_low,
-                        fillcolor="rgba(0, 255, 0, 0.3)", line=dict(width=0),
-                    ))
-                
-                # 跳空下跌
-                elif curr_high < prev_low:
-                    gap_shapes.append(dict(
-                        type="rect", xref="x", yref="y",
-                        x0=prev_date, x1=curr_date,
-                        y0=curr_high, y1=prev_low,
-                        fillcolor="rgba(255, 0, 0, 0.3)", line=dict(width=0),
-                    ))
-            
+                if curr_low > prev_high: # 上漲缺口
+                    gap_shapes.append(dict(type="rect", xref="x", yref="y",
+                        x0=prev_date, x1=curr_date, y0=prev_high, y1=curr_low,
+                        fillcolor="rgba(0, 255, 0, 0.3)", line=dict(width=0)))
+                elif curr_high < prev_low: # 下跌缺口
+                    gap_shapes.append(dict(type="rect", xref="x", yref="y",
+                        x0=prev_date, x1=curr_date, y0=curr_high, y1=prev_low,
+                        fillcolor="rgba(255, 0, 0, 0.3)", line=dict(width=0)))
             fig.update_layout(shapes=gap_shapes)
 
         # 設定版面
@@ -161,5 +177,4 @@ if stock_id:
             st.dataframe(df.sort_index(ascending=False))
 
     else:
-        # 錯誤處理優化：如果選的時間太短或沒開盤
-        st.error("找不到數據。原因可能是：\n1. 股票代碼錯誤\n2. 選定的日期範圍內沒有交易 (例如假日)\n3. 自訂日期範圍設定錯誤 (開始日期晚於結束日期)")
+        st.error("找不到數據，請檢查代碼或日期範圍。")
