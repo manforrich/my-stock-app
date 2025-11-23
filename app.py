@@ -2,7 +2,9 @@ import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
 import pandas as pd
+import feedparser  # 新增這個套件用來抓新聞
 from datetime import datetime, timedelta
+import urllib.parse
 
 # --- 1. 網頁設定 ---
 st.set_page_config(page_title="台股分析儀表板 Pro", layout="wide")
@@ -52,17 +54,26 @@ stock_categories = {
 st.sidebar.header("選股設定")
 selected_category = st.sidebar.selectbox("1️⃣ 選擇產業類別", list(stock_categories.keys()))
 
+stock_name_for_news = "" # 用來儲存中文名稱以搜尋新聞
+
 if selected_category == "🔍 自行輸入代號":
     stock_input = st.sidebar.text_input("輸入台股代號 (如 2330)", "2330")
     target_stock = stock_input
+    stock_name_for_news = stock_input # 自行輸入時，直接用代號搜新聞
 else:
     category_stocks = stock_categories[selected_category]
     selected_stock_name = st.sidebar.selectbox("2️⃣ 選擇個股", list(category_stocks.keys()))
     target_stock = category_stocks[selected_stock_name]
+    
+    # 從 "2330 台積電" 中提取 "台積電" 用於搜尋新聞
+    if " " in selected_stock_name:
+        stock_name_for_news = selected_stock_name.split(" ")[1]
+    else:
+        stock_name_for_news = target_stock
 
 days = st.sidebar.slider("📅 觀察天數", 30, 730, 180)
 
-# --- 4. 數據處理與邏輯 ---
+# --- 4. 數據處理函數 ---
 if not target_stock.endswith(".TW") and not target_stock.endswith(".TWO"):
     ticker = target_stock + ".TW"
 else:
@@ -85,78 +96,84 @@ def get_data(ticker, days):
         
         if df.empty:
             return None
-            
         return df
     except Exception as e:
-        st.error(f"下載數據時發生錯誤: {e}")
         return None
 
-# 顯示載入中
-with st.spinner('正在從雲端抓取資料...'):
-    data = get_data(ticker, days)
+# --- 新增：抓取 Google News 的函數 ---
+@st.cache_data(ttl=3600) # 設定快取 1 小時，避免一直重複抓
+def get_google_news(query):
+    # 將查詢關鍵字編碼 (例如 "台積電" -> "%E5%8F%B0...")
+    encoded_query = urllib.parse.quote(query)
+    # Google News RSS 連結 (指定台灣繁體中文)
+    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    
+    try:
+        feed = feedparser.parse(rss_url)
+        return feed.entries[:6] # 只回傳最新的 6 則
+    except Exception as e:
+        return []
 
 # --- 5. 畫面呈現 ---
+# 顯示載入中
+with st.spinner('正在分析股價與搜尋新聞...'):
+    data = get_data(ticker, days)
+
 if data is not None and not data.empty:
     try:
         latest_data = data.iloc[-1]
         prev_data = data.iloc[-2]
-        
         current_price = latest_data['Close']
-        prev_price = prev_data['Close']
-        change = current_price - prev_price
-        change_pct = (change / prev_price) * 100
+        change = current_price - prev_data['Close']
+        change_pct = (change / prev_data['Close']) * 100
         
+        # 頂部指標
         col1, col2, col3 = st.columns(3)
         col1.metric("股票代號", target_stock)
         col2.metric("收盤價", f"{current_price:.2f}", f"{change:.2f} ({change_pct:.2f}%)")
         col3.metric("成交量", f"{int(latest_data['Volume']/1000):,} 張")
 
+        # --- 圖表區域 ---
         st.subheader(f"📈 {target_stock} 股價走勢")
-        
         data['MA5'] = data['Close'].rolling(window=5).mean()
         data['MA20'] = data['Close'].rolling(window=20).mean()
 
         fig = go.Figure()
-
-        # K線 (改成多行格式，避免複製錯誤)
         fig.add_trace(go.Candlestick(
-            x=data.index,
-            open=data['Open'],
-            high=data['High'],
-            low=data['Low'],
-            close=data['Close'],
-            name='K線'
+            x=data.index, open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'], name='K線'
         ))
-        
-        # MA線 (改成多行格式)
         fig.add_trace(go.Scatter(
-            x=data.index, 
-            y=data['MA5'], 
-            mode='lines', 
-            name='5日均線', 
-            line=dict(color='orange', width=1)
+            x=data.index, y=data['MA5'], mode='lines', name='5日均線', line=dict(color='orange', width=1)
         ))
-
         fig.add_trace(go.Scatter(
-            x=data.index, 
-            y=data['MA20'], 
-            mode='lines', 
-            name='20日均線', 
-            line=dict(color='purple', width=1)
+            x=data.index, y=data['MA20'], mode='lines', name='20日均線', line=dict(color='purple', width=1)
         ))
-
-        fig.update_layout(
-            xaxis_rangeslider_visible=False, 
-            height=500,
-            template="plotly_dark",
-            margin=dict(l=0, r=0, t=30, b=0)
-        )
+        fig.update_layout(xaxis_rangeslider_visible=False, height=500, template="plotly_dark", margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig, use_container_width=True)
 
-        with st.expander("📊 查看詳細數據"):
+        # 詳細數據摺疊選單
+        with st.expander("📊 查看詳細歷史數據"):
             st.dataframe(data.sort_index(ascending=False).style.format("{:.2f}"))
+
+        # --- 新聞區域 (新增) ---
+        st.divider() # 分隔線
+        st.subheader(f"📰 {stock_name_for_news} 最新相關新聞")
+
+        news_list = get_google_news(stock_name_for_news)
+        
+        if news_list:
+            # 使用 2 欄排列新聞卡片
+            news_cols = st.columns(2)
+            for i, news in enumerate(news_list):
+                with news_cols[i % 2]: # 左右交替排列
+                    st.info(
+                        f"**[{news.title}]({news.link})**\n\n"
+                        f"🕒 {news.published[5:16]} | 🔗 [點擊閱讀全文]({news.link})"
+                    )
+        else:
+            st.write("目前找不到相關新聞。")
             
     except Exception as e:
-        st.error(f"數據處理錯誤: {e}")
+        st.error(f"畫面處理錯誤: {e}")
 else:
     st.warning(f"找不到代號 {target_stock} 的資料。")
