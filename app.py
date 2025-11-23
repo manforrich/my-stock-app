@@ -7,7 +7,7 @@ import datetime
 
 # 1. 設定網頁標題
 st.set_page_config(page_title="股票分析儀表板", layout="wide")
-st.title("📈 股票分析儀表板 (全功能版)")
+st.title("📈 股票分析儀表板 (籌碼密集區版)")
 
 # 2. 側邊欄：設定參數
 st.sidebar.header("設定參數")
@@ -30,7 +30,8 @@ else:
 # --- 技術指標設定 ---
 st.sidebar.subheader("技術指標")
 ma_days = st.sidebar.multiselect("顯示均線 (MA)", [5, 10, 20, 60, 120, 240], default=[5, 20])
-show_bb = st.sidebar.checkbox("顯示布林通道 (Bollinger Bands)", value=False) # <--- 新增布林通道開關
+show_bb = st.sidebar.checkbox("顯示布林通道 (Bollinger Bands)", value=False)
+show_vp = st.sidebar.checkbox("顯示成交量分佈 (Volume Profile)", value=True) # <--- 新增成交密集區開關
 show_gaps = st.sidebar.checkbox("顯示跳空缺口 (Gaps)", value=True)
 
 # 3. 抓取股價數據
@@ -84,6 +85,36 @@ if stock_id:
                                      low=df['Low'], close=df['Close'],
                                      name="K線"), 
                       row=1, col=1)
+        
+        # --- Volume Profile (成交密集區) 邏輯 ---
+        if show_vp:
+            # 建立一個隱藏的 X 軸 (xaxis2) 給 Volume Profile 使用
+            # 我們設定 range 為倒過來，讓柱狀圖靠右邊顯示
+            # nbinsy 是將價格切成幾等份，通常 50-100 之間效果最好
+            fig.add_trace(go.Histogram(
+                y=df['Close'], 
+                x=df['Volume'], # 用成交量作為權重
+                histfunc='sum', # 加總成交量
+                orientation='h', # 水平方向
+                nbinsy=50,       # 切成 50 個價格區間
+                name="籌碼分佈",
+                xaxis='x2',      # 指定使用第二個 X 軸
+                marker=dict(color='rgba(0, 0, 0, 0.2)'), # 灰色半透明
+                hoverinfo='none' # 滑鼠移上去不顯示資訊，避免干擾 K 線
+            ), row=1, col=1)
+
+            # 設定第二個 X 軸的樣式 (隱藏刻度，並設定範圍)
+            fig.update_layout(
+                xaxis2=dict(
+                    overlaying='x',  # 疊加在原本的 x 軸上
+                    side='top',      # 標籤放在上面(雖然我們設為隱藏)
+                    showgrid=False,  # 不顯示網格
+                    visible=False,   # 隱藏軸線
+                    # 關鍵設定：range=[最大量的4倍, 0]
+                    # 這會讓柱狀圖只佔畫面的 1/4 (右邊)，且從右向左長出來
+                    range=[df['Volume'].sum()/2, 0] 
+                )
+            )
 
         # 2. 均線
         colors = ['orange', 'blue', 'purple', 'black', 'green', 'red']
@@ -94,9 +125,8 @@ if stock_id:
                                      line=dict(width=1.5, color=colors[i % len(colors)])),
                           row=1, col=1)
 
-        # 3. --- 布林通道邏輯 (新增) ---
+        # 3. 布林通道
         if show_bb:
-            # 計算數據 (20日均線, 2倍標準差)
             bb_period = 20
             std_dev = 2
             df['BB_Mid'] = df['Close'].rolling(window=bb_period).mean()
@@ -104,22 +134,15 @@ if stock_id:
             df['BB_Upper'] = df['BB_Mid'] + (std_dev * df['BB_Std'])
             df['BB_Lower'] = df['BB_Mid'] - (std_dev * df['BB_Std'])
             
-            # 畫下軌 (不顯示圖例名稱，線條設為透明度高的藍色)
             fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'],
                                      line=dict(color='rgba(0, 100, 255, 0.3)', width=1),
                                      mode='lines', name='BB 下軌', showlegend=False),
                           row=1, col=1)
-            
-            # 畫上軌 (並填滿與下軌之間的區域)
             fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'],
                                      line=dict(color='rgba(0, 100, 255, 0.3)', width=1),
-                                     mode='lines', 
-                                     fill='tonexty', # 填滿到上一條線(也就是下軌)
-                                     fillcolor='rgba(0, 100, 255, 0.1)', # 淺藍色背景
-                                     name='布林通道'),
+                                     mode='lines', fill='tonexty', 
+                                     fillcolor='rgba(0, 100, 255, 0.1)', name='布林通道'),
                           row=1, col=1)
-            
-            # 畫中軌 (虛線)
             fig.add_trace(go.Scatter(x=df.index, y=df['BB_Mid'],
                                      line=dict(color='rgba(0, 100, 255, 0.6)', width=1, dash='dash'),
                                      mode='lines', name='BB 中軌'),
@@ -127,10 +150,7 @@ if stock_id:
 
         # 4. 成交量
         vol_colors = ['green' if row['Close'] >= row['Open'] else 'red' for index, row in df.iterrows()]
-        fig.add_trace(go.Bar(x=df.index, 
-                             y=df['Volume'], 
-                             marker_color=vol_colors, 
-                             name="成交量"), 
+        fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, name="成交量"), 
                       row=2, col=1)
 
         # 5. 缺口偵測
@@ -144,11 +164,11 @@ if stock_id:
                 curr_date = df.index[i]
                 prev_date = df.index[i-1]
                 
-                if curr_low > prev_high: # 上漲缺口
+                if curr_low > prev_high:
                     gap_shapes.append(dict(type="rect", xref="x", yref="y",
                         x0=prev_date, x1=curr_date, y0=prev_high, y1=curr_low,
                         fillcolor="rgba(0, 255, 0, 0.3)", line=dict(width=0)))
-                elif curr_high < prev_low: # 下跌缺口
+                elif curr_high < prev_low:
                     gap_shapes.append(dict(type="rect", xref="x", yref="y",
                         x0=prev_date, x1=curr_date, y0=curr_high, y1=prev_low,
                         fillcolor="rgba(255, 0, 0, 0.3)", line=dict(width=0)))
