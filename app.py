@@ -7,7 +7,7 @@ import datetime
 
 # 1. 設定網頁標題
 st.set_page_config(page_title="股票分析儀表板", layout="wide")
-st.title("📈 股票分析儀表板 (修復版)")
+st.title("📈 股票分析儀表板 (修正版)")
 
 # 2. 側邊欄：設定參數
 st.sidebar.header("設定參數")
@@ -74,23 +74,24 @@ if stock_id:
         # --- B. 畫圖 ---
         st.subheader(f"📊 {stock_id} 走勢圖")
         
-        # 建立子圖表 (共用 X 軸)
+        # 建立子圖表 
+        # vertical_spacing 設定為 0.05 讓上下圖分開一點
         fig = make_subplots(rows=2, cols=1, 
                             shared_xaxes=True, 
                             vertical_spacing=0.05, 
                             row_heights=[0.7, 0.3])
 
-        # 1. K 線圖
+        # 1. K 線圖 (主圖，位於第1列)
         fig.add_trace(go.Candlestick(x=df.index,
                                      open=df['Open'], high=df['High'],
                                      low=df['Low'], close=df['Close'],
                                      name="K線"), 
                       row=1, col=1)
         
-        # --- Volume Profile (修復與優化) ---
+        # --- Volume Profile (修正與優化) ---
         if show_vp:
-            # 為了讓它不要跟主圖打架，我們使用 xaxis3 (獨立的 X 軸)
-            # 並且不強制設定 range，讓它自動縮放
+            # 這裡我們使用 xaxis='x3'，這是關鍵！
+            # 這樣它就不會干擾原本的 x (日期軸) 和 x2 (成交量子圖軸)
             fig.add_trace(go.Histogram(
                 y=df['Close'], 
                 x=df['Volume'],
@@ -98,19 +99,19 @@ if stock_id:
                 orientation='h',
                 nbinsy=50,
                 name="籌碼分佈",
-                xaxis='x3', # 使用第三個 X 軸
-                marker=dict(color='rgba(128, 128, 128, 0.3)'), # 灰色半透明
-                hoverinfo='x+y' 
+                xaxis='x3', # 指定使用第 3 個 X 軸
+                marker=dict(color='rgba(128, 128, 128, 0.3)'), 
+                hoverinfo='none' 
             ), row=1, col=1)
 
-            # 設定 xaxis3 的屬性
+            # 強制設定 layout，定義 xaxis3
             fig.update_layout(
                 xaxis3=dict(
-                    overlaying='x', # 疊加在主 X 軸上
-                    side='top',     # 標籤放上面 (避免跟下面的時間軸混淆)
-                    showgrid=False, # 不顯示網格
-                    showticklabels=False, # 不顯示數字 (保持畫面乾淨)
-                    visible=False   # 隱藏軸線
+                    overlaying='x', # 疊加在主圖 X 軸上
+                    side='top',     # 放在上面 (隱藏)
+                    showgrid=False, 
+                    visible=False,  # 隱藏軸線
+                    type='linear'   # <--- 關鍵：強制設定為線性數字，防止變回日期
                 )
             )
 
@@ -139,8 +140,11 @@ if stock_id:
                                      line=dict(color='rgba(0, 100, 255, 0.3)', width=1),
                                      mode='lines', fill='tonexty', 
                                      fillcolor='rgba(0, 100, 255, 0.1)', name='布林通道'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df['BB_Mid'],
+                                     line=dict(color='rgba(0, 100, 255, 0.6)', width=1, dash='dash'),
+                                     mode='lines', name='BB 中軌'), row=1, col=1)
 
-        # 4. 成交量 (下方子圖)
+        # 4. 成交量 (位於第2列)
         vol_colors = ['green' if row['Close'] >= row['Open'] else 'red' for index, row in df.iterrows()]
         fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, name="成交量"), 
                       row=2, col=1)
@@ -169,6 +173,10 @@ if stock_id:
         # 設定版面
         fig.update_layout(xaxis_rangeslider_visible=False, height=600, showlegend=True)
         fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+
+        # 關鍵：設定主 X 軸為日期格式，避免被其他軸影響
+        fig.update_xaxes(type='date', row=1, col=1)
+        fig.update_xaxes(type='date', row=2, col=1)
 
         st.plotly_chart(fig, use_container_width=True)
 
