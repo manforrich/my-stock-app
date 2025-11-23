@@ -1,8 +1,9 @@
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots  # 新增這個用來做雙層圖表
 import pandas as pd
-import feedparser  # 新增這個套件用來抓新聞
+import feedparser
 from datetime import datetime, timedelta
 import urllib.parse
 
@@ -54,18 +55,17 @@ stock_categories = {
 st.sidebar.header("選股設定")
 selected_category = st.sidebar.selectbox("1️⃣ 選擇產業類別", list(stock_categories.keys()))
 
-stock_name_for_news = "" # 用來儲存中文名稱以搜尋新聞
+stock_name_for_news = ""
 
 if selected_category == "🔍 自行輸入代號":
     stock_input = st.sidebar.text_input("輸入台股代號 (如 2330)", "2330")
     target_stock = stock_input
-    stock_name_for_news = stock_input # 自行輸入時，直接用代號搜新聞
+    stock_name_for_news = stock_input
 else:
     category_stocks = stock_categories[selected_category]
     selected_stock_name = st.sidebar.selectbox("2️⃣ 選擇個股", list(category_stocks.keys()))
     target_stock = category_stocks[selected_stock_name]
     
-    # 從 "2330 台積電" 中提取 "台積電" 用於搜尋新聞
     if " " in selected_stock_name:
         stock_name_for_news = selected_stock_name.split(" ")[1]
     else:
@@ -100,22 +100,17 @@ def get_data(ticker, days):
     except Exception as e:
         return None
 
-# --- 新增：抓取 Google News 的函數 ---
-@st.cache_data(ttl=3600) # 設定快取 1 小時，避免一直重複抓
+@st.cache_data(ttl=3600)
 def get_google_news(query):
-    # 將查詢關鍵字編碼 (例如 "台積電" -> "%E5%8F%B0...")
     encoded_query = urllib.parse.quote(query)
-    # Google News RSS 連結 (指定台灣繁體中文)
     rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-    
     try:
         feed = feedparser.parse(rss_url)
-        return feed.entries[:6] # 只回傳最新的 6 則
+        return feed.entries[:6]
     except Exception as e:
         return []
 
 # --- 5. 畫面呈現 ---
-# 顯示載入中
 with st.spinner('正在分析股價與搜尋新聞...'):
     data = get_data(ticker, days)
 
@@ -127,49 +122,79 @@ if data is not None and not data.empty:
         change = current_price - prev_data['Close']
         change_pct = (change / prev_data['Close']) * 100
         
-        # 頂部指標
         col1, col2, col3 = st.columns(3)
         col1.metric("股票代號", target_stock)
         col2.metric("收盤價", f"{current_price:.2f}", f"{change:.2f} ({change_pct:.2f}%)")
         col3.metric("成交量", f"{int(latest_data['Volume']/1000):,} 張")
 
-        # --- 圖表區域 ---
+        # --- 繪圖區 (修改重點) ---
         st.subheader(f"📈 {target_stock} 股價走勢")
+        
         data['MA5'] = data['Close'].rolling(window=5).mean()
         data['MA20'] = data['Close'].rolling(window=20).mean()
 
-        fig = go.Figure()
+        # 1. 建立雙層圖表 (上層K線，下層成交量)
+        fig = make_subplots(
+            rows=2, cols=1, 
+            shared_xaxes=True, 
+            vertical_spacing=0.03, 
+            subplot_titles=(f'{target_stock} 股價', '成交量'),
+            row_width=[0.2, 0.7] # 下層佔 20%，上層佔 70%
+        )
+
+        # 2. 加入 K 線圖 (放在第 1 列)
         fig.add_trace(go.Candlestick(
-            x=data.index, open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'], name='K線'
-        ))
+            x=data.index,
+            open=data['Open'],
+            high=data['High'],
+            low=data['Low'],
+            close=data['Close'],
+            name='K線'
+        ), row=1, col=1)
+
+        # 3. 加入均線 (放在第 1 列)
         fig.add_trace(go.Scatter(
             x=data.index, y=data['MA5'], mode='lines', name='5日均線', line=dict(color='orange', width=1)
-        ))
+        ), row=1, col=1)
+        
         fig.add_trace(go.Scatter(
             x=data.index, y=data['MA20'], mode='lines', name='20日均線', line=dict(color='purple', width=1)
-        ))
-        fig.update_layout(xaxis_rangeslider_visible=False, height=500, template="plotly_dark", margin=dict(l=0, r=0, t=30, b=0))
+        ), row=1, col=1)
+
+        # 4. 加入成交量 (放在第 2 列)
+        # 設定顏色：收盤 > 開盤 為紅色(漲)，否則為綠色(跌)
+        volume_colors = ['red' if row['Close'] >= row['Open'] else 'green' for i, row in data.iterrows()]
+        
+        fig.add_trace(go.Bar(
+            x=data.index, 
+            y=data['Volume'], 
+            name='成交量',
+            marker_color=volume_colors
+        ), row=2, col=1)
+
+        # 5. 設定版面
+        fig.update_layout(
+            xaxis_rangeslider_visible=False, 
+            height=600, # 稍微加高一點
+            template="plotly_dark",
+            margin=dict(l=0, r=0, t=30, b=0),
+            showlegend=False # 隱藏圖例避免太雜，或是設為 True
+        )
         st.plotly_chart(fig, use_container_width=True)
 
-        # 詳細數據摺疊選單
         with st.expander("📊 查看詳細歷史數據"):
             st.dataframe(data.sort_index(ascending=False).style.format("{:.2f}"))
 
-        # --- 新聞區域 (新增) ---
-        st.divider() # 分隔線
+        # --- 新聞區 ---
+        st.divider()
         st.subheader(f"📰 {stock_name_for_news} 最新相關新聞")
-
         news_list = get_google_news(stock_name_for_news)
         
         if news_list:
-            # 使用 2 欄排列新聞卡片
             news_cols = st.columns(2)
             for i, news in enumerate(news_list):
-                with news_cols[i % 2]: # 左右交替排列
-                    st.info(
-                        f"**[{news.title}]({news.link})**\n\n"
-                        f"🕒 {news.published[5:16]} | 🔗 [點擊閱讀全文]({news.link})"
-                    )
+                with news_cols[i % 2]:
+                    st.info(f"**[{news.title}]({news.link})**\n\n🕒 {news.published[5:16]}")
         else:
             st.write("目前找不到相關新聞。")
             
