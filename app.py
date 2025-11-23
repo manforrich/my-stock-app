@@ -1,87 +1,94 @@
-# --- 5. 回測引擎 (Backtesting Logic) ---
+import pandas as pd
 
 def run_backtest(df, initial_capital):
     capital = initial_capital
     shares = 0
     trade_log = []
     
-    # 初始化投資組合價值 (用於繪圖)
+    # 初始化欄位
     df['Portfolio_Value'] = initial_capital
     df['Shares_Held'] = 0
     df['Cash'] = initial_capital
     
-    # 從有 MA60 資料的第二天開始回測
-    for i in range(1, len(df)):
+    # 設定回測起始點 (確保有 MA 資料)
+    # 假設我們以 MA20 為主，從第 20 天開始
+    start_index = 20 
+    
+    for i in range(start_index, len(df)):
         date = df.index[i]
-        price = df['Close'].iloc[i] # <-- **當日收盤價 (用於交易執行)**
+        price = df['Close'].iloc[i]
         
-        # 前一日的資料 (用於判斷是否發生穿越/跌破)
-        prev_close = df['Close'].iloc[i-1]
-        prev_ma60 = df['MA60'].iloc[i-1]
+        # 取得當日與前一日的均線數據
+        current_ma_short = df['MA5'].iloc[i]   # 短期均線
+        current_ma_long = df['MA20'].iloc[i]   # 長期均線
         
-        # 當日均線
-        current_ma5 = df['MA5'].iloc[i]
-        current_ma10 = df['MA10'].iloc[i]
-        current_ma20 = df['MA20'].iloc[i]
-        current_ma60 = df['MA60'].iloc[i]
+        prev_ma_short = df['MA5'].iloc[i-1]
+        prev_ma_long = df['MA20'].iloc[i-1]
         
-        # 總資產現值 (當日收盤前)
-        current_portfolio_value = capital + shares * price
+        # --- 交易邏輯區 (全進全出) ---
         
-        # --- 賣出/出場邏輯 (優先判斷) ---
+        # 1. 買入訊號：黃金交叉 (短線由下往上穿過長線)
+        # 邏輯：昨天短線 < 昨天長線  AND  今天短線 >= 今天長線
+        buy_signal = (prev_ma_short < prev_ma_long) and (current_ma_short >= current_ma_long)
         
-        # 1. 跌破季線 (MA60) 則全部出場
-        if shares > 0 and prev_close > prev_ma60 and price < current_ma60:
-            amount_to_sell = shares
-            cash_gain = amount_to_sell * price # <-- 使用當日收盤價執行
+        # 2. 賣出訊號：死亡交叉 (短線由上往下穿過長線)
+        # 邏輯：昨天短線 > 昨天長線  AND  今天短線 <= 今天長線
+        sell_signal = (prev_ma_short > prev_ma_long) and (current_ma_short <= current_ma_long)
+        
+        # --- 執行交易 ---
+        
+        # 執行賣出 (如果有持股 且 出現賣訊)
+        if shares > 0 and sell_signal:
+            cash_gain = shares * price
             capital += cash_gain
-            shares -= amount_to_sell
-            trade_log.append({'Date': date, 'Price': price, 'Action': 'EXIT ALL', 'Shares': amount_to_sell, 'Value': amount_to_sell * price, 'Capital_After': capital})
             
-        # 2. 跌破月線 (MA20) 則減碼 50%
-        elif shares > 0 and prev_close > df['MA20'].iloc[i-1] and price < current_ma20:
-            amount_to_sell = shares * 0.5
-            amount_to_sell = int(amount_to_sell / 1000) * 1000 # 捨去到張
-            if amount_to_sell > 0:
-                cash_gain = amount_to_sell * price # <-- 使用當日收盤價執行
-                capital += cash_gain
-                shares -= amount_to_sell
-                trade_log.append({'Date': date, 'Price': price, 'Action': 'SELL 50%', 'Shares': amount_to_sell, 'Value': amount_to_sell * price, 'Capital_After': capital})
+            trade_log.append({
+                'Date': date,
+                'Action': 'SELL',
+                'Price': price,
+                'Shares': shares,
+                'Value': cash_gain,
+                'Capital_After': capital
+            })
+            shares = 0 # 清空持股
 
-        # --- 買入/加碼邏輯 ---
-
-        # 3. 碰觸 (穿越) 10日線 則加碼 10%
-        elif capital > 0 and prev_close < df['MA10'].iloc[i-1] and price >= current_ma10:
-            investment_amount = current_portfolio_value * 0.10
-            shares_to_buy = int(investment_amount / price / 1000) * 1000
+        # 執行買入 (如果沒持股 且 出現買訊 且 資金足夠)
+        elif shares == 0 and buy_signal:
+            # 簡單起見，全倉買入 (可自行調整為買 90% 或固定金額)
+            shares_to_buy = int(capital / price / 1000) * 1000 # 無條件捨去至張數(1000股)
             
-            # 確保有足夠的現金，且買入單位不為零
-            if shares_to_buy > 0 and capital >= shares_to_buy * price:
-                capital -= shares_to_buy * price # <-- 使用當日收盤價執行
+            if shares_to_buy > 0:
+                cost = shares_to_buy * price
+                capital -= cost
                 shares += shares_to_buy
-                trade_log.append({'Date': date, 'Price': price, 'Action': 'BUY 10% (MA10)', 'Shares': shares_to_buy, 'Value': shares_to_buy * price, 'Capital_After': capital})
-
-        # 4. 碰觸 (穿越) 5日線 則加碼 5%
-        elif capital > 0 and prev_close < df['MA5'].iloc[i-1] and price >= current_ma5:
-            investment_amount = current_portfolio_value * 0.05
-            shares_to_buy = int(investment_amount / price / 1000) * 1000
-            
-            if shares_to_buy > 0 and capital >= shares_to_buy * price:
-                capital -= shares_to_buy * price # <-- 使用當日收盤價執行
-                shares += shares_to_buy
-                trade_log.append({'Date': date, 'Price': price, 'Action': 'BUY 5% (MA5)', 'Shares': shares_to_buy, 'Value': shares_to_buy * price, 'Capital_After': capital})
                 
-        # 紀錄每日資產狀態
-        df.loc[date, 'Portfolio_Value'] = capital + shares * price
+                trade_log.append({
+                    'Date': date,
+                    'Action': 'BUY',
+                    'Price': price,
+                    'Shares': shares_to_buy,
+                    'Value': cost,
+                    'Capital_After': capital
+                })
+        
+        # --- 紀錄每日狀態 ---
+        df.loc[date, 'Portfolio_Value'] = capital + (shares * price)
         df.loc[date, 'Shares_Held'] = shares
         df.loc[date, 'Cash'] = capital
-        
-    # 回測結束，清算剩餘持股
+
+    # 回測結束：若還有持股，以最後一天收盤價計算最終價值
     if shares > 0:
         final_price = df['Close'].iloc[-1]
-        cash_gain = shares * final_price
-        capital += cash_gain
+        final_value = shares * final_price
+        capital += final_value
+        trade_log.append({
+            'Date': df.index[-1], 
+            'Action': 'Final Liquidation', 
+            'Price': final_price, 
+            'Shares': shares, 
+            'Value': final_value, 
+            'Capital_After': capital
+        })
         shares = 0
-        trade_log.append({'Date': df.index[-1], 'Price': final_price, 'Action': 'Final Liquidation', 'Shares': amount_to_sell, 'Value': cash_gain, 'Capital_After': capital})
-    
+
     return capital, trade_log, df
