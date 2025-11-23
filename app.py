@@ -11,7 +11,8 @@ st.title("📈 股票分析儀表板 (Google News 版)")
 st.sidebar.header("設定參數")
 # 預設加入台積電，方便測試
 stock_id = st.sidebar.text_input("輸入股票代碼", value="2330.TW")
-period = st.sidebar.selectbox("選擇時間範圍", ["1Month", "3Month", "6Month", "1Year", "5Year"])
+period = st.sidebar.selectbox("選擇時間範圍", ["1mo", "3mo", "6mo", "1y", "5y"])
+
 
 # 3. 抓取股價數據 (用 yfinance)
 def get_stock_data(ticker, period):
