@@ -8,8 +8,8 @@ from datetime import datetime, timedelta
 import urllib.parse
 
 # --- 1. 網頁設定 ---
-st.set_page_config(page_title="台股分析儀表板 Ultimate", layout="wide")
-st.title("📈 台股個股分析儀表板 Ultimate")
+st.set_page_config(page_title="台股分析儀表板 Pro", layout="wide")
+st.title("📈 台股個股分析儀表板 Pro")
 
 # --- 2. 預設的股票清單 ---
 stock_categories = {
@@ -56,18 +56,15 @@ st.sidebar.header("選股設定")
 selected_category = st.sidebar.selectbox("1️⃣ 選擇產業類別", list(stock_categories.keys()))
 
 stock_name_for_news = ""
-target_stock_code = "" # 純代號，不含 .TW
 
 if selected_category == "🔍 自行輸入代號":
     stock_input = st.sidebar.text_input("輸入台股代號 (如 2330)", "2330")
     target_stock = stock_input
     stock_name_for_news = stock_input
-    target_stock_code = stock_input
 else:
     category_stocks = stock_categories[selected_category]
     selected_stock_name = st.sidebar.selectbox("2️⃣ 選擇個股", list(category_stocks.keys()))
     target_stock = category_stocks[selected_stock_name]
-    target_stock_code = target_stock
     
     if " " in selected_stock_name:
         stock_name_for_news = selected_stock_name.split(" ")[1]
@@ -114,7 +111,7 @@ def get_google_news(query):
         return []
 
 # --- 5. 畫面呈現 ---
-with st.spinner('正在分析股價、搜尋新聞與籌碼資料...'):
+with st.spinner('正在分析股價與搜尋新聞...'):
     data = get_data(ticker, days)
 
 if data is not None and not data.empty:
@@ -130,13 +127,13 @@ if data is not None and not data.empty:
         col2.metric("收盤價", f"{current_price:.2f}", f"{change:.2f} ({change_pct:.2f}%)")
         col3.metric("成交量", f"{int(latest_data['Volume']/1000):,} 張")
 
-        # --- A. 繪圖區 ---
+        # --- 繪圖區 ---
         st.subheader(f"📈 {target_stock} 股價走勢")
         
         data['MA5'] = data['Close'].rolling(window=5).mean()
         data['MA20'] = data['Close'].rolling(window=20).mean()
-        data['MA60'] = data['Close'].rolling(window=60).mean() # 新增季線
 
+        # 建立雙層圖表 (上層K線，下層成交量)
         fig = make_subplots(
             rows=2, cols=1, 
             shared_xaxes=True, 
@@ -147,13 +144,22 @@ if data is not None and not data.empty:
 
         # K線
         fig.add_trace(go.Candlestick(
-            x=data.index, open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'], name='K線'
+            x=data.index,
+            open=data['Open'],
+            high=data['High'],
+            low=data['Low'],
+            close=data['Close'],
+            name='K線'
         ), row=1, col=1)
 
         # 均線
-        fig.add_trace(go.Scatter(x=data.index, y=data['MA5'], mode='lines', name='5日線', line=dict(color='orange', width=1)), row=1, col=1)
-        fig.add_trace(go.Scatter(x=data.index, y=data['MA20'], mode='lines', name='20日線 (月)', line=dict(color='purple', width=1)), row=1, col=1)
-        fig.add_trace(go.Scatter(x=data.index, y=data['MA60'], mode='lines', name='60日線 (季)', line=dict(color='green', width=1)), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=data.index, y=data['MA5'], mode='lines', name='5日均線', line=dict(color='orange', width=1)
+        ), row=1, col=1)
+        
+        fig.add_trace(go.Scatter(
+            x=data.index, y=data['MA20'], mode='lines', name='20日均線', line=dict(color='purple', width=1)
+        ), row=1, col=1)
 
         # 成交量
         volume_colors = ['red' if row['Close'] >= row['Open'] else 'green' for i, row in data.iterrows()]
@@ -161,53 +167,19 @@ if data is not None and not data.empty:
             x=data.index, y=data['Volume'], name='成交量', marker_color=volume_colors
         ), row=2, col=1)
 
-        fig.update_layout(xaxis_rangeslider_visible=False, height=600, template="plotly_dark", margin=dict(l=0, r=0, t=30, b=0), showlegend=True)
+        fig.update_layout(
+            xaxis_rangeslider_visible=False, 
+            height=600, 
+            template="plotly_dark", 
+            margin=dict(l=0, r=0, t=30, b=0),
+            showlegend=False
+        )
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- B. 籌碼傳送門 (新增功能) ---
-        st.divider()
-        st.subheader("🕵️‍♂️ 主力籌碼與分點追蹤")
-        st.info("Yahoo Finance 不提供券商分點數據，但您可以透過下方按鈕，直接查看該股票在各大籌碼網站的詳細紀錄：")
-        
-        chip_col1, chip_col2, chip_col3, chip_col4 = st.columns(4)
-        
-        with chip_col1:
-            st.markdown(f"""
-            <a href="https://www.wantgoo.com/stock/{target_stock_code}/major-investors" target="_blank">
-                <button style="width:100%; padding:10px; border-radius:5px; background-color:#FF4B4B; color:white; border:none; cursor:pointer;">
-                    🦁 玩股網：主力進出
-                </button>
-            </a>
-            """, unsafe_allow_html=True)
-            
-        with chip_col2:
-            st.markdown(f"""
-            <a href="https://goodinfo.tw/tw/ShowK_Chart.asp?STOCK_ID={target_stock_code}&CHT_CAT=SHEET" target="_blank">
-                <button style="width:100%; padding:10px; border-radius:5px; background-color:#2E86C1; color:white; border:none; cursor:pointer;">
-                    📘 Goodinfo：法人買賣
-                </button>
-            </a>
-            """, unsafe_allow_html=True)
-            
-        with chip_col3:
-            st.markdown(f"""
-            <a href="https://www.cmoney.tw/finance/f00027.aspx?s={target_stock_code}" target="_blank">
-                <button style="width:100%; padding:10px; border-radius:5px; background-color:#F39C12; color:white; border:none; cursor:pointer;">
-                    💰 CMoney：券商分點
-                </button>
-            </a>
-            """, unsafe_allow_html=True)
+        with st.expander("📊 查看詳細歷史數據"):
+            st.dataframe(data.sort_index(ascending=False).style.format("{:.2f}"))
 
-        with chip_col4:
-             st.markdown(f"""
-            <a href="https://histock.tw/stock/{target_stock_code}/%E4%B8%89%E5%A4%A7%E6%B3%95%E4%BA%BA" target="_blank">
-                <button style="width:100%; padding:10px; border-radius:5px; background-color:#27AE60; color:white; border:none; cursor:pointer;">
-                    📊 HiStock：三大法人
-                </button>
-            </a>
-            """, unsafe_allow_html=True)
-
-        # --- C. 新聞區 ---
+        # --- 新聞區 ---
         st.divider()
         st.subheader(f"📰 {stock_name_for_news} 最新相關新聞")
         news_list = get_google_news(stock_name_for_news)
