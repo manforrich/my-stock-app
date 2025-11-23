@@ -92,3 +92,22 @@ def run_backtest(df, initial_capital):
         shares = 0
 
     return capital, trade_log, df
+df = df.dropna()
+
+# 1. 呼叫函數開始運算 (假設本金為 100 萬)
+# 注意：這裡的 'df' 必須是您前面抓取股票資料後的那個變數名稱
+final_capital, log, result_df = run_backtest(df, 1000000)
+
+# 2. 使用 Streamlit 顯示文字結果
+st.subheader("回測結果")
+st.metric("最終總資產", f"{int(final_capital):,} 元")
+
+# 3. 繪製資產曲線圖
+st.line_chart(result_df['Portfolio_Value'])
+
+# 4. 顯示詳細交易紀錄
+if log:
+    st.write("### 交易紀錄明細")
+    st.dataframe(log)
+else:
+    st.write("這段期間沒有觸發任何交易。")
