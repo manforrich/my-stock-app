@@ -12,7 +12,12 @@ st.title("📈 股票分析儀表板 (含成交量)")
 st.sidebar.header("設定參數")
 stock_id = st.sidebar.text_input("輸入股票代碼", value="2330.TW")
 period = st.sidebar.selectbox("選擇時間範圍", ["1mo", "3mo", "6mo", "1y", "5y", "max"])
-
+st.sidebar.subheader("技術指標")
+ma_days = st.sidebar.multiselect(
+    "選擇移動平均線 (MA)", 
+    [5, 10, 20, 60, 120, 240], 
+    default=[5, 20] # 預設顯示 5日(週線) 和 20日(月線)
+)
 # 3. 抓取股價數據
 def get_stock_data(ticker, period):
     try:
