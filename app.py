@@ -121,7 +121,7 @@ if stock_id:
                 name="籌碼分佈",
                 xaxis='x3', # 指定獨立的 X 軸
                 yaxis='y',  # 共用主圖的 Y 軸 (價格)
-                marker=dict(color='rgba(0, 0, 0, 0.15)'), 
+                marker=dict(color='rgba(31, 119, 180, 0.3)'), 
                 hoverinfo='none'
             ))
 
